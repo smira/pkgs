@@ -19,6 +19,16 @@ steps:
         mkdir -p /tmp/systemd
         tar -xzf systemd.tar.gz --strip-components=1 -C /tmp/systemd
         cd /tmp/systemd
+      - |
+        # Apply patches
+        cd /tmp/systemd
+
+        for patch in /pkg/patches/*.patch; do
+          echo "Applying patch: $patch"
+          patch -p1 < $patch
+        done
+      - |
+        cd /tmp/systemd
 
         meson setup build \
           --buildtype=release \

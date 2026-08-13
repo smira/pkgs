@@ -1,0 +1,53 @@
+From: Talos Linux <bugs@siderolabs.com>
+Subject: [PATCH] boot: skip El Torito partition UUID discovery
+
+systemd v261 added disk_get_part_uuid_eltorito(), which is reached from
+disk_get_part_uuid() whenever the booted image's device path carries a CDROM
+node instead of a GPT HARDDRIVE node -- i.e. on every El Torito CD/DVD boot.
+It is called from export_common_variables() (so from both sd-boot and sd-stub)
+and again directly from sd-stub for StubDevicePartUUID.
+
+The new code touches the raw optical device in ways nothing did before: it
+calls BS->ConnectController() on it recursively, then issues unaligned
+sub-block EFI_DISK_IO_PROTOCOL reads probing for a GPT header at four
+candidate sector sizes. Some firmware faults in that path and brings the
+machine down with a synchronous exception before the kernel is entered.
+Reported against UTM on arm64, where Talos v1.14.0-alpha.2 (systemd 260)
+boots and v1.14.0-beta.0 (systemd 261) does not:
+
+    https://github.com/siderolabs/talos/issues/14029
+
+Drop the fallback and restore the systemd <= 260 behavior. The only
+consequence is that LoaderDevicePartUUID/StubDevicePartUUID are left unset
+when booting off a CD/DVD.
+
+--- a/src/boot/part-discovery.c
++++ b/src/boot/part-discovery.c
+@@ -321,6 +321,7 @@
+         return EFI_SUCCESS;
+ }
+ 
++__attribute__((unused))
+ static char16_t* disk_get_part_uuid_eltorito(const EFI_DEVICE_PATH *dp) {
+         EFI_STATUS err;
+ 
+@@ -473,6 +474,17 @@
+                 return xasprintf(GUID_FORMAT_STR, GUID_FORMAT_VAL(hd->SignatureGuid));
+         }
+ 
+-        /* No GPT partition node found — try El Torito device path as fallback */
+-        return disk_get_part_uuid_eltorito(dp);
++        /* No GPT partition node found.
++         *
++         * Upstream falls back to disk_get_part_uuid_eltorito() here, which probes the underlying
++         * optical device via EFI_DISK_IO_PROTOCOL (sub-block reads at four candidate GPT sector
++         * sizes) and additionally calls ConnectController() on it recursively. Some firmware
++         * implementations fault in that path, taking the machine down with a synchronous exception
++         * before the kernel is ever entered:
++         *
++         *     https://github.com/siderolabs/talos/issues/14029
++         *
++         * The only thing lost by skipping this is Loader/StubDevicePartUUID being unset when
++         * booting off an El Torito CD/DVD, which is the behavior systemd <= 260 had. */
++        return NULL;
+ }

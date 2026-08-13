@@ -1,0 +1,77 @@
+From: Talos Linux <bugs@siderolabs.com>
+Subject: [PATCH] boot: DIAGNOSTIC instrumentation of the entry start path
+
+Not for merging. Prints a marker before and after every call sd-boot and
+sd-stub make between the user selecting a boot entry and the kernel being
+entered, so that the last marker on screen identifies the call that faults.
+
+Investigating https://github.com/siderolabs/talos/issues/14029, where arm64
+firmware dies with a synchronous exception immediately after a boot entry is
+selected, at an address that is invariant across ISO layout and sd-boot
+binary changes (i.e. inside firmware, not inside sd-boot).
+
+These use log_info() rather than log_debug() so they appear at the default
+log level, without needing 'log-level debug' in loader.conf. The stub raises
+its own level explicitly because it never reads loader.conf.
+
+--- a/src/boot/boot.c
++++ b/src/boot/boot.c
+@@ -3006,7 +3006,9 @@
+         }
+ 
+         /* Authenticate the image before we continue with initrd or DT stuff */
++        log_info("TALOS-DEBUG: calling shim_load_image() for '%ls'", entry->loader ?: u"<none>");
+         err = shim_load_image(parent_image, path, boot_policy, &image);
++        log_info_status(err, "TALOS-DEBUG: shim_load_image() returned: %m");
+         if (err != EFI_SUCCESS) {
+                 if (entry->url) {
+                         /* EFI_NOT_FOUND typically indicates that no network stack or NIC was available, let's give the user a hint. */
+@@ -3059,7 +3061,9 @@
+                         ;
+                 }
+ 
++                log_info("TALOS-DEBUG: calling initrd_register(), size=%zu", initrd_size);
+                 err = initrd_register(&IOVEC_MAKE(PHYSICAL_ADDRESS_TO_POINTER(initrd_pages.addr), initrd_size), &initrd_handle);
++                log_info_status(err, "TALOS-DEBUG: initrd_register() returned: %m");
+                 if (err != EFI_SUCCESS)
+                         return log_error_status(err, "Error registering initrd: %m");
+ 
+@@ -3105,7 +3109,10 @@
+         }
+ 
+         efivar_set_time_usec(MAKE_GUID_PTR(LOADER), u"LoaderTimeExecUSec", 0);
++        log_info("TALOS-DEBUG: calling StartImage()");
++        log_wait();
+         err = BS->StartImage(image, NULL, NULL);
++        log_info_status(err, "TALOS-DEBUG: StartImage() returned: %m");
+         graphics_mode(false);
+         if (err == EFI_SUCCESS)
+                 return EFI_SUCCESS;
+--- a/src/boot/stub.c
++++ b/src/boot/stub.c
+@@ -1206,7 +1206,13 @@
+ 
+         log_set_max_level_from_smbios();
+ 
++        /* TALOS-DEBUG: unconditionally raise the log level so the probes below are visible; the stub does
++         * not read loader.conf, so there is no other way to turn them on. */
++        log_set_max_level(LOG_DEBUG);
++        log_info("TALOS-DEBUG: sd-stub entered run()");
++
+         err = BS->HandleProtocol(image, MAKE_GUID_PTR(EFI_LOADED_IMAGE_PROTOCOL), (void **) &loaded_image);
++        log_info_status(err, "TALOS-DEBUG: stub HandleProtocol(LoadedImage) returned: %m");
+         if (err != EFI_SUCCESS)
+                 return log_error_status(err, "Error getting a LoadedImageProtocol handle: %m");
+ 
+@@ -1307,7 +1313,11 @@
+                         (const uint8_t*) loaded_image->ImageBase + sections[UNIFIED_SECTION_LINUX].memory_offset,
+                         sections[UNIFIED_SECTION_LINUX].memory_size);
+ 
++        log_info("TALOS-DEBUG: calling linux_exec(), kernel=%zu bytes, initrd=%zu bytes",
++                 kernel.iov_len, final_initrd.iov_len);
++        log_wait();
+         err = linux_exec(image, cmdline, &kernel, &final_initrd);
++        log_info_status(err, "TALOS-DEBUG: linux_exec() returned: %m");
+         graphics_mode(false);
+         return err;
+ }
